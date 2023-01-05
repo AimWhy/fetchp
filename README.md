@@ -154,7 +154,7 @@ make.
 ```js
 import { fetchp } from "fetchp";
 
-fetchp.setBaseUrl("https://jsonplaceholder.typicode.com");
+fetchp.setBaseUri("https://jsonplaceholder.typicode.com");
 
 const req = fetchp.request("GET", "/posts");
 
@@ -266,7 +266,7 @@ console.log(await req.data);
 ```js
 import { useFetchp } from "fetchp";
 
-function MyComponent(props) {
+const MyComponent = (props) => {
   const { data, isLoading, error } = useFetchp("GET", "/posts");
 
   if (isLoading) {
@@ -278,7 +278,7 @@ function MyComponent(props) {
   }
 
   return <div>{JSON.stringify(data)}</div>;
-}
+};
 ```
 
 ### Using with _**React Hooks**_, mocking for testing
@@ -287,7 +287,7 @@ function MyComponent(props) {
 // just replace fetchp with fetchp/mock
 import { useFetchp } from "fetchp/mock";
 
-function MyComponent(props) {
+const MyComponent = (props) => {
   const { data, isLoading, error } = useFetchp("GET", "/posts");
 
   if (isLoading) {
@@ -299,7 +299,7 @@ function MyComponent(props) {
   }
 
   return <div>{JSON.stringify(data)}</div>;
-}
+};
 ```
 
 ### Using with _**React Hooks**_, manual fetching
@@ -308,7 +308,7 @@ function MyComponent(props) {
 import { useEffect } from "react";
 import { useFetchp } from "fetchp";
 
-function MyComponent(props) {
+const MyComponent = (props) => {
   const { data, status, isSuccess, doFetch } = useFetchp(
     "GET",
     "/posts",
@@ -325,13 +325,13 @@ function MyComponent(props) {
   }
 
   return <div>{status}: {JSON.stringify(data)}</div>;
-}
+};
 ```
 
 ### Using with _**Deno**_
 
 ```js
-import { fetchp } from "https://esm.sh/fetchp";
+import { fetchp } from "npm:fetchp";
 
 const req = fetchp.request("GET", "https://www.google.com/");
 

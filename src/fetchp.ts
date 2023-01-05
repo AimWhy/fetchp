@@ -1,5 +1,6 @@
 // interface definitions
 // ---------------------
+import { type FetchpURI } from "./uris.ts";
 import {
   type FetchpHookFn,
   FetchpHookType,
@@ -24,6 +25,7 @@ enum FetchpStatus {
 
 interface FetchpRequestInit extends RequestInit {
   immediate?: boolean;
+  uriParams?: Record<string, string | undefined>;
   cacheRequest?: boolean;
   statusCallback?: (status: FetchpStatus) => void;
   // deno-lint-ignore no-explicit-any
@@ -43,21 +45,21 @@ interface FetchpResultInterface<T = any> {
   readonly error: any;
   readonly data: Promise<T | undefined>;
 
-  exec(): FetchpResultInterface<T>;
+  exec(init?: FetchpRequestInit): FetchpResultInterface<T>;
 }
 
 interface FetchpInterface {
-  baseUrl: string | undefined;
+  baseUri: string | undefined;
   hooks: HookRegistryInterface;
   mocks: MockRegistryInterface;
   cache: CacheRegistryInterface;
 
-  setBaseUrl: (url: string) => void;
+  setBaseUri: (uri: string) => void;
 
   // deno-lint-ignore no-explicit-any
   request: <T = any>(
     method: string,
-    url: string,
+    uri: FetchpURI,
     init?: FetchpRequestInit,
   ) => FetchpResultInterface<T>;
 }
@@ -75,26 +77,26 @@ type InternalFetchState = [
 ];
 
 class Fetchp implements FetchpInterface {
-  baseUrl: string | undefined;
+  baseUri: string | undefined;
   hooks: HookRegistryInterface;
   mocks: MockRegistryInterface;
   cache: CacheRegistryInterface;
 
   constructor() {
-    this.baseUrl = undefined;
+    this.baseUri = undefined;
     this.hooks = new HookRegistry();
     this.mocks = new MockRegistry();
     this.cache = new CacheRegistry();
   }
 
-  setBaseUrl(url: string | undefined) {
-    this.baseUrl = url;
+  setBaseUri(uri: string | undefined) {
+    this.baseUri = uri;
   }
 
   internalMockChecker(request: Request): Promise<Response> | undefined {
     const mock = this.mocks.find(
       request,
-      (url) => this.internalUrlConverter(url),
+      (uri) => this.internalUrlConverter(uri),
     );
 
     return mock?.responseFn?.(request);
@@ -103,7 +105,7 @@ class Fetchp implements FetchpInterface {
   internalCacheChecker(request: Request): Promise<Response> | undefined {
     const cache = this.cache.items.filterByRequest(
       request,
-      (url) => this.internalUrlConverter(url),
+      (uri) => this.internalUrlConverter(uri),
     );
 
     return cache?.[0]?.data;
@@ -122,7 +124,8 @@ class Fetchp implements FetchpInterface {
     const _res = cacheMode ? response.clone() : response;
 
     if (
-      contentType !== null && contentType !== undefined &&
+      contentType !== null &&
+      contentType !== undefined &&
       contentType.startsWith("application/json")
     ) {
       return _res.json() as Promise<T>;
@@ -131,8 +134,13 @@ class Fetchp implements FetchpInterface {
     return _res.text() as unknown as Promise<T>;
   }
 
-  internalUrlConverter(url: string) {
-    return new URL(url, this.baseUrl);
+  internalUrlConverter(
+    uri: FetchpURI,
+    params?: Record<string, string | undefined>,
+  ) {
+    const finalUri = typeof uri === "function" ? uri(params) : uri;
+
+    return new URL(finalUri, this.baseUri);
   }
 
   internalAwaiterGenerator<T = unknown>(): [(value: T) => void, Promise<T>] {
@@ -161,10 +169,7 @@ class Fetchp implements FetchpInterface {
         undefined,
         FetchpStatus.PREPARING,
       ),
-      this.hooks.callGlobalHooks(
-        FetchpHookType.BuildRequestHeaders,
-        headers,
-      ),
+      this.hooks.callGlobalHooks(FetchpHookType.BuildRequestHeaders, headers),
     ]);
   }
 
@@ -206,7 +211,7 @@ class Fetchp implements FetchpInterface {
     _callback: (status: FetchpStatus) => void,
   ): Promise<InternalFetchState> {
     const mockedResponse =
-      (request !== undefined && !abortController.signal.aborted)
+      request !== undefined && !abortController.signal.aborted
         ? this.internalMockChecker(request)
         : undefined;
 
@@ -225,11 +230,11 @@ class Fetchp implements FetchpInterface {
     abortController: AbortController,
     _callback: (status: FetchpStatus) => void,
   ): Promise<InternalFetchState> {
-    const mockedOrCachedResponse =
-      (request === undefined || abortController.signal.aborted ||
-          mockedResponse !== undefined)
-        ? mockedResponse
-        : this.internalCacheChecker(request);
+    const mockedOrCachedResponse = request === undefined ||
+        abortController.signal.aborted ||
+        mockedResponse !== undefined
+      ? mockedResponse
+      : this.internalCacheChecker(request);
 
     return Promise.all([
       FetchpStatus.PREPARING,
@@ -248,7 +253,8 @@ class Fetchp implements FetchpInterface {
     callback: (status: FetchpStatus) => void,
   ): Promise<InternalFetchState> {
     if (
-      request !== undefined && mockedOrCachedResponse === undefined &&
+      request !== undefined &&
+      mockedOrCachedResponse === undefined &&
       !abortController.signal.aborted
     ) {
       const fetchedResponse = this.internalFetcher(request);
@@ -402,8 +408,11 @@ class Fetchp implements FetchpInterface {
       ]);
     }
 
-    const deserialized = (response !== undefined)
-      ? this.internalDataDeserializer<T>(response, init?.cacheRequest ?? false)
+    const deserialized = response !== undefined
+      ? this.internalDataDeserializer<T>(
+        response,
+        init?.cacheRequest ?? false,
+      )
       : undefined;
 
     return Promise.all([
@@ -431,19 +440,15 @@ class Fetchp implements FetchpInterface {
   }
 
   // deno-lint-ignore no-explicit-any
-  request<T = any>(method: string, url: string, init?: FetchpRequestInit) {
-    const url_ = this.internalUrlConverter(url);
-
-    const headers = new Headers(init?.headers);
-    if (!headers.has("Content-Type")) {
-      headers.set("Content-Type", "application/json");
-    }
-
+  request<T = any>(method: string, uri: FetchpURI, init?: FetchpRequestInit) {
     const abortController = new AbortController();
     const [awaiterResolve, awaiter] = this.internalAwaiterGenerator<
       Response | undefined
     >();
 
+    let init_: FetchpRequestInit = init ?? {};
+    let url_: URL;
+    let headers: Headers;
     let status = FetchpStatus.IDLE;
     // deno-lint-ignore no-explicit-any
     let error: any;
@@ -451,11 +456,19 @@ class Fetchp implements FetchpInterface {
 
     // -- REQUEST PART -- //
     const promise = awaiter
+      .then(() => {
+        url_ = this.internalUrlConverter(uri, init_.uriParams);
+
+        headers = new Headers(init_.headers);
+        if (!headers.has("Content-Type")) {
+          headers.set("Content-Type", "application/json");
+        }
+      })
       .then(() =>
         this.internalRequestStep1InitHeaders(
           headers,
-          init,
-          (newStatus) => status = newStatus,
+          init_,
+          (newStatus) => (status = newStatus),
         )
       )
       .then(() =>
@@ -463,7 +476,7 @@ class Fetchp implements FetchpInterface {
           method,
           url_,
           headers,
-          init,
+          init_,
           abortController,
           (newStatus, newRequest) => {
             status = newStatus;
@@ -475,7 +488,7 @@ class Fetchp implements FetchpInterface {
         this.internalRequestStep3CheckForMocks(
           req,
           abortController,
-          (newStatus) => status = newStatus,
+          (newStatus) => (status = newStatus),
         )
       )
       .then(([, req, res]) =>
@@ -483,16 +496,16 @@ class Fetchp implements FetchpInterface {
           req,
           res,
           abortController,
-          (newStatus) => status = newStatus,
+          (newStatus) => (status = newStatus),
         )
       )
       .then(([, req, res]) =>
         this.internalRequestStep5ExecuteRequest(
           req,
           res,
-          init,
+          init_,
           abortController,
-          (newStatus) => status = newStatus,
+          (newStatus) => (status = newStatus),
         )
       )
       .catch((err) =>
@@ -502,34 +515,37 @@ class Fetchp implements FetchpInterface {
         })
       );
 
-    const response: Promise<Response | undefined> = promise.then(([, , res]) =>
-      res
+    const response: Promise<Response | undefined> = promise.then(
+      ([, , res]) => res,
     );
 
     // -- LOAD PART -- //
-    const data = promise.then(([state, req, res, err]) =>
-      this.internalLoadStep1CheckState(
-        state,
-        req,
-        res,
-        err,
-        init,
-        abortController,
-        (newStatus) => status = newStatus,
+    const data = promise
+      .then(([state, req, res, err]) =>
+        this.internalLoadStep1CheckState(
+          state,
+          req,
+          res,
+          err,
+          init_,
+          abortController,
+          (newStatus) => (status = newStatus),
+        )
       )
-    ).then(([state, req, res, err]) =>
-      this.internalLoadStep2Deserialization<T>(
-        state,
-        req,
-        res,
-        err,
-        init,
-        (newStatus, newError) => {
-          status = newStatus;
-          error = newError;
-        },
+      .then(([state, req, res, err]) =>
+        this.internalLoadStep2Deserialization<T>(
+          state,
+          req,
+          res,
+          err,
+          init_,
+          (newStatus, newError) => {
+            status = newStatus;
+            error = newError;
+          },
+        )
       )
-    ).then(([, data]) => data);
+      .then(([, data]) => data);
 
     const result = {
       get request() {
@@ -552,7 +568,8 @@ class Fetchp implements FetchpInterface {
         return data;
       },
 
-      exec: () => {
+      exec: (init?: FetchpRequestInit) => {
+        init_ = { ...init_, ...(init ?? {}) };
         awaiterResolve(undefined);
 
         return result;

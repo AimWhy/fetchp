@@ -1,17 +1,17 @@
-import { fetchp, FetchpHookType, FetchpStatus } from "./fetchp.ts";
-import { asserts, mock } from "./deps-external.ts";
+import { fetchp, FetchpHookType, FetchpStatus } from "../fetchp.ts";
+import { asserts, mock } from "./deps.ts";
 
 Deno.test("fetchp", { permissions: { net: true } }, async (t) => {
-  await t.step("baseUrl setter", () => {
-    fetchp.setBaseUrl("http://localhost/");
+  await t.step("baseUri setter", () => {
+    fetchp.setBaseUri("http://localhost/");
 
-    asserts.assertEquals(fetchp.baseUrl, "http://localhost/");
+    asserts.assertEquals(fetchp.baseUri, "http://localhost/");
 
-    fetchp.setBaseUrl(undefined);
+    fetchp.setBaseUri(undefined);
   });
 
-  await t.step("baseUrl transformer", async () => {
-    fetchp.setBaseUrl("https://jsonplaceholder.typicode.com");
+  await t.step("baseUri transformer", async () => {
+    fetchp.setBaseUri("https://jsonplaceholder.typicode.com");
 
     const res1 = fetchp.request("GET", "/posts");
     const res2 = fetchp.request("GET", "http://www.google.com");
@@ -29,6 +29,16 @@ Deno.test("fetchp", { permissions: { net: true } }, async (t) => {
       res2.request?.url.toString(),
       "http://www.google.com/",
     );
+  });
+
+  await t.step("dynamic uri", async () => {
+    const response = fetchp.request(
+      "GET",
+      (params) => `https://jsonplaceholder.typicode.com/${params?.path}`,
+      { uriParams: { path: "posts" } },
+    );
+
+    asserts.assertExists(await response.data);
   });
 
   await t.step("mocks: basic", async () => {
@@ -53,7 +63,7 @@ Deno.test("fetchp", { permissions: { net: true } }, async (t) => {
     fetchp.mocks.clear();
   });
 
-  await t.step("hooks: BuildRequestHeaders", async () => {
+  await t.step("hooks: BuildRequestHeaders Call", async () => {
     const hookSpyFn = mock.spy();
 
     fetchp.hooks.add(FetchpHookType.BuildRequestHeaders, hookSpyFn);
@@ -65,6 +75,24 @@ Deno.test("fetchp", { permissions: { net: true } }, async (t) => {
 
     asserts.assertExists(await response.data);
     mock.assertSpyCalls(hookSpyFn, 1);
+
+    fetchp.hooks.clear();
+  });
+
+  await t.step("hooks: BuildRequestHeaders Build", async () => {
+    const hookFn = (headers: Headers) => {
+      headers.set("X-Test", "test");
+    };
+
+    fetchp.hooks.add(FetchpHookType.BuildRequestHeaders, hookFn);
+
+    const response = fetchp.request(
+      "GET",
+      "https://jsonplaceholder.typicode.com/todos",
+    );
+
+    asserts.assertExists(await response.data);
+    asserts.assertEquals(response.request?.headers.get("X-Test"), "test");
 
     fetchp.hooks.clear();
   });
@@ -123,6 +151,25 @@ Deno.test("fetchp", { permissions: { net: true } }, async (t) => {
     asserts.assertStrictEquals(response.status, FetchpStatus.IDLE);
 
     setTimeout(() => response.exec(), 500);
+
+    asserts.assertExists(await response.data);
+    asserts.assert((await response.data).length >= 10);
+    asserts.assertStrictEquals(response.status, FetchpStatus.SUCCESS);
+  });
+
+  await t.step("disable immediate w/ dynamic uri", async () => {
+    const response = fetchp.request(
+      "GET",
+      (params) => `https://jsonplaceholder.typicode.com/${params?.path}`,
+      {
+        immediate: false,
+      },
+    );
+
+    // asserts.assertEquals(await response.data, undefined);
+    asserts.assertStrictEquals(response.status, FetchpStatus.IDLE);
+
+    setTimeout(() => response.exec({ uriParams: { path: "posts" } }), 500);
 
     asserts.assertExists(await response.data);
     asserts.assert((await response.data).length >= 10);
